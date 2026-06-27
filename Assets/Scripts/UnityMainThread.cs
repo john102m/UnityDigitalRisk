@@ -11,6 +11,7 @@ public class UnityMainThread : MonoBehaviour
     {
         if (instance == null) { instance = this; DontDestroyOnLoad(gameObject); }
         else Destroy(gameObject);
+        Application.runInBackground = true;
     }
 
     void Update()

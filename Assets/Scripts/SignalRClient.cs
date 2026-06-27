@@ -14,6 +14,7 @@ public class SignalRClient : MonoBehaviour
     public event Action<string> OnGameStateUpdated;
     public event Action<string> OnCombatResult;
     public event Action<string> OnBlitzResult;
+    public event Action<int, int> OnAttackSelection;
 
     async void Start()
     {
@@ -46,6 +47,11 @@ public class SignalRClient : MonoBehaviour
             UnityMainThread.Enqueue(() => OnBlitzResult?.Invoke(json));
         });
 
+        connection.On<int?, int?>("AttackSelection", (sourceId, targetId) =>
+        {
+            UnityMainThread.Enqueue(() => OnAttackSelection?.Invoke(sourceId ?? -1, targetId ?? -1));
+        });
+
         connection.Closed += error =>
         {
             Debug.Log($"SignalR disconnected: {error?.Message}");
@@ -68,10 +74,21 @@ public class SignalRClient : MonoBehaviour
             await connection.StartAsync();
             Debug.Log("SignalR connected");
             await connection.InvokeAsync("GetState");
+            StartCoroutine(PollState());
         }
         catch (Exception ex)
         {
             Debug.LogError($"SignalR connection failed: {ex.Message}");
+        }
+    }
+
+    System.Collections.IEnumerator PollState()
+    {
+        while (true)
+        {
+            yield return new WaitForSeconds(5f);
+            if (connection?.State == HubConnectionState.Connected)
+                _ = connection.InvokeAsync("GetState");
         }
     }
 

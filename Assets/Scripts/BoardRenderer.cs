@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections;
 using TMPro;
 
 public class BoardRenderer : MonoBehaviour
@@ -7,6 +8,11 @@ public class BoardRenderer : MonoBehaviour
     public Transform mapTransform;
     public float tokenScale = 0.35f;
     public float textSize = 3f;
+    public Color attackSourceGlow = Color.green;
+    public Color attackTargetGlow = Color.red;
+    public float glowDuration = 3f;
+    public float pulseSpeed = 3f;
+    public float pulseAmount = 0.15f;
 
     GameObject[] tokens = new GameObject[42];
     Renderer[] tokenRenderers = new Renderer[42];
@@ -30,7 +36,66 @@ public class BoardRenderer : MonoBehaviour
     void Start()
     {
         GameStateManager.Instance.OnStateChanged += Refresh;
+        var signalR = FindAnyObjectByType<SignalRClient>();
+        signalR.OnAttackSelection += OnAttackSelection;
+        signalR.OnCombatResult += json => { };
+        signalR.OnBlitzResult += json => { };
         SpawnTokens();
+    }
+
+    int glowSourceId = -1;
+    int glowTargetId = -1;
+    string lastTurnPhase = "";
+    Coroutine pulseCoroutine;
+
+    void OnAttackSelection(int sourceId, int targetId)
+    {
+        ClearGlow();
+        glowSourceId = sourceId;
+        glowTargetId = targetId;
+
+        if (sourceId >= 0 && sourceId < 42 && tokenRenderers[sourceId] != null)
+            tokenRenderers[sourceId].material.SetColor("_EmissionColor", attackSourceGlow * 2f);
+        if (targetId >= 0 && targetId < 42 && tokenRenderers[targetId] != null)
+            tokenRenderers[targetId].material.SetColor("_EmissionColor", attackTargetGlow * 2f);
+
+        pulseCoroutine = StartCoroutine(PulseTokens());
+    }
+
+    IEnumerator PulseTokens()
+    {
+        float t = 0f;
+        while (true)
+        {
+            t += Time.deltaTime * pulseSpeed;
+            float scale = 1f + Mathf.Sin(t) * pulseAmount;
+            var pulseScale = tokenPrefab.transform.localScale * tokenScale * scale;
+
+            if (glowSourceId >= 0 && glowSourceId < 42 && tokens[glowSourceId] != null)
+                tokens[glowSourceId].transform.localScale = pulseScale;
+            if (glowTargetId >= 0 && glowTargetId < 42 && tokens[glowTargetId] != null)
+                tokens[glowTargetId].transform.localScale = pulseScale;
+
+            yield return null;
+        }
+    }
+
+    void ClearGlow()
+    {
+        if (pulseCoroutine != null) { StopCoroutine(pulseCoroutine); pulseCoroutine = null; }
+
+        var normalScale = tokenPrefab.transform.localScale * tokenScale;
+        if (glowSourceId >= 0 && glowSourceId < 42 && tokens[glowSourceId] != null)
+            tokens[glowSourceId].transform.localScale = normalScale;
+        if (glowTargetId >= 0 && glowTargetId < 42 && tokens[glowTargetId] != null)
+            tokens[glowTargetId].transform.localScale = normalScale;
+
+        if (glowSourceId >= 0 && glowSourceId < 42 && tokenRenderers[glowSourceId] != null)
+            tokenRenderers[glowSourceId].material.SetColor("_EmissionColor", Color.black);
+        if (glowTargetId >= 0 && glowTargetId < 42 && tokenRenderers[glowTargetId] != null)
+            tokenRenderers[glowTargetId].material.SetColor("_EmissionColor", Color.black);
+        glowSourceId = -1;
+        glowTargetId = -1;
     }
 
     void SpawnTokens()
@@ -43,22 +108,23 @@ public class BoardRenderer : MonoBehaviour
             float y = bounds.max.y - (COORDS[i].y / 100f) * bounds.size.y;
 
             // Spawn token
-            var token = Instantiate(tokenPrefab, new Vector3(x, y, -0.1f), Quaternion.Euler(90, 0, 0), transform);
+            var token = Instantiate(tokenPrefab, new Vector3(x, y, -0.1f), tokenPrefab.transform.rotation, transform);
             token.name = $"Territory_{i}";
-            token.transform.localScale = Vector3.one * tokenScale;
+            token.transform.localScale = tokenPrefab.transform.localScale * tokenScale;
             tokens[i] = token;
             tokenRenderers[i] = token.GetComponent<Renderer>();
+            tokenRenderers[i].material.EnableKeyword("_EMISSION");
 
-            // Spawn text label as separate object (always faces camera)
+            // Spawn text label as child of token (sits on top)
             var textGO = new GameObject($"Label_{i}");
-            textGO.transform.SetParent(transform);
-            textGO.transform.position = new Vector3(x, y, -1f);
+            textGO.transform.SetParent(token.transform);
+            textGO.transform.localPosition = new Vector3(0, 1.1f, 0);
+            textGO.transform.localRotation = Quaternion.Euler(90, 0, 0);
             var tmp = textGO.AddComponent<TextMeshPro>();
             tmp.text = "";
             tmp.fontSize = textSize;
             tmp.alignment = TextAlignmentOptions.Center;
             tmp.color = Color.white;
-            tmp.sortingOrder = 10;
             tmp.rectTransform.sizeDelta = new Vector2(2, 1);
             labels[i] = tmp;
         }
@@ -68,6 +134,12 @@ public class BoardRenderer : MonoBehaviour
     {
         var state = GameStateManager.Instance.State;
         if (state?.territories == null) return;
+
+        if (state.turnPhase != lastTurnPhase)
+        {
+            ClearGlow();
+            lastTurnPhase = state.turnPhase;
+        }
 
         foreach (var t in state.territories)
         {
