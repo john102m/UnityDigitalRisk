@@ -1,76 +1,108 @@
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// Spawns dice into the arena, applies physics forces, waits for them to settle,
+/// then reads the naturally-landed faces. No correction — physics determines the result.
+/// </summary>
 public class DiceRoller : MonoBehaviour
 {
+    [Tooltip("Die prefab — cube with Rigidbody + BoxCollider + PhysicsMaterial")]
     public GameObject dicePrefab;
+
+    [Tooltip("Position above the arena where dice spawn")]
     public Transform spawnPoint;
-    public float throwForce = 5f;
+
+    [Tooltip("Downward velocity applied to dice on spawn")]
+    public float throwForce = 8f;
+
+    [Tooltip("Random angular velocity applied to dice (higher = more spin)")]
     public float throwTorque = 10f;
-    public float settleThreshold = 0.01f;
+
+    [Tooltip("Velocity below this = die has stopped moving")]
+    public float settleThreshold = 0.1f;
+
+    [Tooltip("Max seconds to wait for dice to settle before forcing")]
     public float settleTimeout = 4f;
+
+    [Tooltip("Material for attacker dice (red)")]
     public Material attackerMaterial;
+
+    [Tooltip("Material for defender dice (white)")]
     public Material defenderMaterial;
 
     List<GameObject> activeDice = new();
 
-    public IEnumerator RollDice(int[] attackerValues, int[] defenderValues, System.Action onComplete)
+    /// <summary>
+    /// Roll dice using real physics and read the result. No face correction.
+    /// Returns the naturally-landed face values for attacker and defender dice.
+    /// </summary>
+    public async Awaitable<(int[] attackerValues, int[] defenderValues)> RollAndRead(int attackerCount, int defenderCount)
     {
-        Debug.Log($"[DiceRoller] Rolling {attackerValues.Length} attacker + {defenderValues.Length} defender dice");
+        Debug.Log($"[DiceRoller] Rolling {attackerCount} attacker + {defenderCount} defender dice (physics-driven)");
         ClearDice();
 
-        // Spawn attacker dice (left side)
-        for (int i = 0; i < attackerValues.Length; i++)
-        {
-            var die = SpawnDie(new Vector3(-1f + i * 0.8f, 3f, 0), attackerMaterial);
-            activeDice.Add(die);
-        }
+        // Spawn attacker dice on the left side of the arena
+        for (int i = 0; i < attackerCount; i++)
+            activeDice.Add(SpawnDie(new Vector3(-1f + i * 0.8f, 3f, 0), attackerMaterial));
 
-        // Spawn defender dice (right side)
-        for (int i = 0; i < defenderValues.Length; i++)
-        {
-            var die = SpawnDie(new Vector3(1.5f + i * 0.8f, 3f, 0), defenderMaterial);
-            activeDice.Add(die);
-        }
+        // Spawn defender dice on the right side
+        for (int i = 0; i < defenderCount; i++)
+            activeDice.Add(SpawnDie(new Vector3(1.5f + i * 0.8f, 3f, 0), defenderMaterial));
 
         Debug.Log($"[DiceRoller] Spawned {activeDice.Count} dice, waiting to settle");
 
-        // Wait for all dice to settle
-        yield return StartCoroutine(WaitForSettle());
+        await WaitForSettle();
 
-        Debug.Log("[DiceRoller] Dice settled, correcting faces");
-
-        // Force correct faces (rotate to match server values)
+        // Read the naturally-landed faces
+        var attackerValues = new int[attackerCount];
+        var defenderValues = new int[defenderCount];
         int idx = 0;
-        for (int i = 0; i < attackerValues.Length; i++)
-            CorrectFace(activeDice[idx++], attackerValues[i]);
-        for (int i = 0; i < defenderValues.Length; i++)
-            CorrectFace(activeDice[idx++], defenderValues[i]);
+        for (int i = 0; i < attackerCount; i++)
+            attackerValues[i] = activeDice[idx++].GetComponent<DiceFaceReader>().ReadTopFace();
+        for (int i = 0; i < defenderCount; i++)
+            defenderValues[i] = activeDice[idx++].GetComponent<DiceFaceReader>().ReadTopFace();
 
-        yield return new WaitForSeconds(1.5f);
-
+        Debug.Log($"[DiceRoller] Read faces — attacker: [{string.Join(",", attackerValues)}], defender: [{string.Join(",", defenderValues)}]");
         Debug.Log("[DiceRoller] Roll complete");
-        onComplete?.Invoke();
+
+        return (attackerValues, defenderValues);
     }
 
+    /// <summary>Instantiate a single die with random rotation and applied forces.</summary>
     GameObject SpawnDie(Vector3 localOffset, Material mat)
     {
         Vector3 pos = spawnPoint.position + localOffset;
         var die = Instantiate(dicePrefab, pos, Random.rotation);
-        die.GetComponent<Renderer>().material = mat;
         die.AddComponent<DiceFaceReader>();
 
+        // Set layer and material on all children (FBX models nest the mesh)
+        foreach (var r in die.GetComponentsInChildren<Renderer>())
+        {
+            r.gameObject.layer = LayerMask.NameToLayer("DiceArena");
+            r.material = mat;
+        }
+        die.layer = LayerMask.NameToLayer("DiceArena");
+
         var rb = die.GetComponent<Rigidbody>();
-        rb.linearVelocity = Vector3.down * throwForce;
+        Vector3 throwDir = new Vector3(
+            Random.Range(-0.5f, 0.5f),
+            Random.Range(-0.5f, 0.2f),
+            Random.Range(0.8f, 1.5f)
+        ).normalized;
+
+        rb.linearVelocity = throwDir * throwForce;
         rb.angularVelocity = Random.insideUnitSphere * throwTorque;
 
         return die;
     }
 
-    IEnumerator WaitForSettle()
+    /// <summary>
+    /// Wait each frame until all dice velocities drop below threshold, or timeout expires.
+    /// </summary>
+    async Awaitable WaitForSettle()
     {
-        yield return new WaitForSeconds(0.5f); // let physics start
+        await Awaitable.NextFrameAsync();
 
         float elapsed = 0f;
         while (elapsed < settleTimeout)
@@ -79,50 +111,77 @@ public class DiceRoller : MonoBehaviour
             foreach (var die in activeDice)
             {
                 var rb = die.GetComponent<Rigidbody>();
-                if (rb.linearVelocity.magnitude > settleThreshold || rb.angularVelocity.magnitude > settleThreshold)
+                if (rb.linearVelocity.magnitude > settleThreshold)
                 {
                     allSettled = false;
                     break;
                 }
             }
-            if (allSettled) yield break;
+            if (allSettled) return;
             elapsed += Time.deltaTime;
-            yield return null;
+            await Awaitable.NextFrameAsync();
         }
     }
 
-    void CorrectFace(GameObject die, int targetValue)
-    {
-        var reader = die.GetComponent<DiceFaceReader>();
-        int current = reader.ReadTopFace();
-        if (current == targetValue) return;
-
-        // Rotate die so target face is on top
-        var rb = die.GetComponent<Rigidbody>();
-        rb.isKinematic = true;
-
-        Quaternion correction = GetRotationForFace(targetValue);
-        die.transform.rotation = correction;
-    }
-
-    Quaternion GetRotationForFace(int face)
-    {
-        return face switch
-        {
-            1 => Quaternion.Euler(90, 0, 0),
-            2 => Quaternion.identity,
-            3 => Quaternion.Euler(0, 0, -90),
-            4 => Quaternion.Euler(0, 0, 90),
-            5 => Quaternion.Euler(180, 0, 0),
-            6 => Quaternion.Euler(-90, 0, 0),
-            _ => Quaternion.identity
-        };
-    }
-
+    /// <summary>Destroy all spawned dice (called after sequence completes).</summary>
     public void ClearDice()
     {
         foreach (var die in activeDice)
             if (die != null) Destroy(die);
         activeDice.Clear();
+    }
+
+    /// <summary>Place dice showing specific face values scattered around a centre point.</summary>
+    public void PlaceDiceAtValues(int[] attackerValues, int[] defenderValues, Vector3? centre = null)
+    {
+        ClearDice();
+
+        Vector3 c = centre ?? spawnPoint.position + new Vector3(0f, 0.5f, 2f);
+        c.y -= 0.6f;
+        float spread = 1.2f;
+
+        for (int i = 0; i < attackerValues.Length; i++)
+        {
+            var offset = new Vector3(-spread - i * 1.0f, 0f, Random.Range(-0.4f, 0.4f));
+            var rot = Quaternion.Euler(0f, Random.Range(-25f, 25f), 0f) * GetRotationForFace(attackerValues[i]);
+            var die = Instantiate(dicePrefab, c + offset, rot);
+            SetupPlacedDie(die, attackerMaterial);
+        }
+
+        for (int i = 0; i < defenderValues.Length; i++)
+        {
+            var offset = new Vector3(spread + i * 1.0f, 0f, Random.Range(-0.4f, 0.4f));
+            var rot = Quaternion.Euler(0f, Random.Range(-25f, 25f), 0f) * GetRotationForFace(defenderValues[i]);
+            var die = Instantiate(dicePrefab, c + offset, rot);
+            SetupPlacedDie(die, defenderMaterial);
+        }
+    }
+
+    void SetupPlacedDie(GameObject die, Material mat)
+    {
+        foreach (var r in die.GetComponentsInChildren<Renderer>())
+        {
+            r.gameObject.layer = LayerMask.NameToLayer("DiceArena");
+            r.material = mat;
+        }
+        die.layer = LayerMask.NameToLayer("DiceArena");
+        var rb = die.GetComponent<Rigidbody>();
+        if (rb != null) rb.isKinematic = true;
+        activeDice.Add(die);
+    }
+
+    /// <summary>Returns a rotation that places the given face value on top (matching FBX mapping).</summary>
+    static Quaternion GetRotationForFace(int face)
+    {
+        return face switch
+        {
+            1 => Quaternion.identity,                           // +Y up
+            6 => Quaternion.Euler(0f, 0f, 180f),               // -Y up
+            3 => Quaternion.Euler(0f, 0f, -90f),               // +X up
+            4 => Quaternion.Euler(0f, 0f, 90f),                // -X up
+            2 => Quaternion.Euler(90f, 0f, 0f),                // +Z up
+            5 => Quaternion.Euler(-90f, 0f, 0f),               // -Z up
+            _ => Quaternion.identity
+        };
     }
 }

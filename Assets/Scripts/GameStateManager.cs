@@ -3,14 +3,22 @@ using System.Collections.Generic;
 using Newtonsoft.Json;
 using UnityEngine;
 
+/// <summary>
+/// Singleton that holds the current deserialized game state.
+/// Listens for GameStateUpdated from SignalRClient, deserializes JSON,
+/// and fires OnStateChanged so UI/renderers can refresh.
+/// </summary>
 public class GameStateManager : MonoBehaviour
 {
     public static GameStateManager Instance;
 
     public GameStateDTO State { get; private set; }
+
+    /// <summary>Fired whenever the game state is updated from the server.</summary>
     public event Action OnStateChanged;
 
     SignalRClient signalR;
+    int updateCount = 0;
 
     void Awake()
     {
@@ -23,6 +31,7 @@ public class GameStateManager : MonoBehaviour
         signalR.OnGameStateUpdated += HandleStateUpdate;
     }
 
+    /// <summary>Deserialize incoming JSON and notify listeners.</summary>
     void HandleStateUpdate(string json)
     {
         if (string.IsNullOrEmpty(json)) return;
@@ -30,17 +39,16 @@ public class GameStateManager : MonoBehaviour
         Debug.Log($"[State #{++updateCount}] {State?.players?.Count} players, {State?.territories?.Count} territories, phase={State?.phase}/{State?.turnPhase}");
         OnStateChanged?.Invoke();
     }
-
-    int updateCount = 0;
 }
 
-// DTOs matching server's SignalR payloads
+// --- DTOs matching server's camelCase JSON payloads ---
+
 [Serializable]
 public class GameStateDTO
 {
     public string gameCode;
-    public string phase;
-    public string turnPhase;
+    public string phase;       // "Lobby", "InitialPlacement", "Playing", "GameOver"
+    public string turnPhase;   // "Reinforce", "Attack", "Fortify"
     public int currentPlayerIndex;
     public List<PlayerDTO> players;
     public List<TerritoryDTO> territories;
@@ -50,7 +58,7 @@ public class GameStateDTO
 public class PlayerDTO
 {
     public string name;
-    public string colour;
+    public string colour;      // Hex colour e.g. "#E53E3E"
     public int avatarIndex;
     public bool isHost;
     public int reinforcementsRemaining;
@@ -61,9 +69,9 @@ public class PlayerDTO
 [Serializable]
 public class TerritoryDTO
 {
-    public int id;
+    public int id;             // 0–41
     public string name;
     public string continent;
-    public int ownerId;
+    public int ownerId;        // Index into players list, -1 if unowned
     public int armies;
 }
