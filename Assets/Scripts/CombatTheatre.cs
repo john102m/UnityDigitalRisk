@@ -26,11 +26,17 @@ public class CombatTheatre : MonoBehaviour
     SignalRClient signalR;
     bool isPlaying;
     bool panelVisible;
+    bool awaitingSecondRoll;
+    int spawnCount;
+    bool cameraFlownThisTurn;
+    System.Threading.CancellationTokenSource hideCts;
+    int combatGeneration;
 
     void Start()
     {
         signalR = FindAnyObjectByType<SignalRClient>();
         signalR.OnCombatRollRequest += OnCombatRollRequest;
+        signalR.OnSpawnDice += OnSpawnDice;
         signalR.OnCombatResult += OnCombatResult;
         signalR.OnBlitzResult += OnBlitzResult;
         signalR.OnAttackSelection += OnAttackSelection;
@@ -44,16 +50,65 @@ public class CombatTheatre : MonoBehaviour
         // New attack target selected — clear old dice, keep panel hidden until roll
     }
 
+    /// <summary>
+    /// Server tells Unity to spawn one player's dice (player-rolled flow).
+    /// First spawn triggers camera fly, second just adds dice.
+    /// After both spawns arrive, wait for settle and send result.
+    /// </summary>
+    void OnSpawnDice(string role, int diceCount)
+    {
+        Debug.Log($"[CombatTheatre] SpawnDice: {role} x{diceCount}");
+
+        if (role == "attacker")
+        {
+            // Attacker spawn always starts a new combat — reset state
+            combatGeneration++;
+            hideCts?.Cancel();
+            spawnCount = 0;
+            diceRoller.ClearDice();
+            ShowDicePanel(true);
+            panelVisible = true;
+            isPlaying = true;
+
+            if (!cameraFlownThisTurn && cameraFlypath != null)
+            {
+                cameraFlownThisTurn = true;
+                var flyCts = new System.Threading.CancellationTokenSource();
+                _ = cameraFlypath.Fly(diceCamera.transform, flyCts.Token);
+            }
+        }
+
+        diceRoller.SpawnSet(role, diceCount);
+        spawnCount++;
+
+        // After both sets spawned, wait for settle and send result
+        if (spawnCount >= 2)
+            _ = WaitAndSendResult();
+    }
+
+    async Awaitable WaitAndSendResult()
+    {
+        var (attackerValues, defenderValues) = await diceRoller.WaitAndReadAll();
+        await signalR.SendDiceResult(0, 0, attackerValues, defenderValues);
+        Debug.Log($"[CombatTheatre] Sent dice result to server");
+        await Awaitable.WaitForSecondsAsync(3f);
+        isPlaying = false;
+    }
+
     void OnStateChanged()
     {
         var state = GameStateManager.Instance.State;
         if (state == null) return;
 
-        if (state.turnPhase != "Attack" && panelVisible && !isPlaying)
+        if (state.turnPhase != "Attack")
         {
-            ShowDicePanel(false);
-            panelVisible = false;
-            diceRoller.ClearDice();
+            cameraFlownThisTurn = false;
+            if (panelVisible && !isPlaying)
+            {
+                ShowDicePanel(false);
+                panelVisible = false;
+                diceRoller.ClearDice();
+            }
         }
     }
 
@@ -89,6 +144,11 @@ public class CombatTheatre : MonoBehaviour
         var result = JsonConvert.DeserializeObject<CombatResultDTO>(json);
         if (result == null) return;
 
+        // If a newer combat has started (spawnCount > 0 means new dice are in play), ignore stale result
+        if (spawnCount > 0) return;
+
+        isPlaying = false;
+
         if (result.captured && panelVisible)
         {
             _ = HidePanelAfterDelay();
@@ -97,9 +157,14 @@ public class CombatTheatre : MonoBehaviour
 
     async Awaitable HidePanelAfterDelay()
     {
+        hideCts?.Cancel();
+        hideCts = new System.Threading.CancellationTokenSource();
+        var token = hideCts.Token;
         await Awaitable.WaitForSecondsAsync(4f);
+        if (token.IsCancellationRequested) return;
         ShowDicePanel(false);
         panelVisible = false;
+        cameraFlownThisTurn = false;
         diceRoller.ClearDice();
     }
 
@@ -116,12 +181,13 @@ public class CombatTheatre : MonoBehaviour
         ShowDicePanel(true);
         panelVisible = true;
 
-        // Snap camera to result position looking at the dice
-        if (cameraFlypath != null && cameraFlypath.resultPosition != null)
+        // Camera sweep into the arena
+        if (cameraFlypath != null)
         {
-            diceCamera.transform.position = cameraFlypath.resultPosition.position;
-            if (cameraFlypath.lookTarget != null)
-                diceCamera.transform.LookAt(cameraFlypath.lookTarget);
+            var flyCts = new System.Threading.CancellationTokenSource();
+            _ = cameraFlypath.Fly(diceCamera.transform, flyCts.Token);
+            await Awaitable.WaitForSecondsAsync(cameraFlypath.duration + 0.5f);
+            flyCts.Cancel();
         }
 
         Vector3? centre = cameraFlypath != null && cameraFlypath.lookTarget != null
