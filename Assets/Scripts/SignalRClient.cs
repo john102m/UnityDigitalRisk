@@ -33,6 +33,9 @@ public class SignalRClient : MonoBehaviour
     /// <summary>Fired when server requests a dice roll from Unity (TV-driven physics).</summary>
     public event Action<int, int, int, int> OnCombatRollRequest;
 
+    /// <summary>Fired when server tells Unity to spawn one player's dice.</summary>
+    public event Action<string, int> OnSpawnDice;
+
     async void Start()
     {
         connection = new HubConnectionBuilder()
@@ -82,6 +85,14 @@ public class SignalRClient : MonoBehaviour
             int defenderCount = request.GetProperty("defenderDiceCount").GetInt32();
             Debug.Log($"[SignalR] CombatRollRequest: {attackerCount} attacker, {defenderCount} defender");
             UnityMainThread.Enqueue(() => OnCombatRollRequest?.Invoke(sourceId, targetId, attackerCount, defenderCount));
+        });
+
+        connection.On<JsonElement>("SpawnDice", spawn =>
+        {
+            string role = spawn.GetProperty("role").GetString();
+            int diceCount = spawn.GetProperty("diceCount").GetInt32();
+            Debug.Log($"[SignalR] SpawnDice: {role} x{diceCount}");
+            UnityMainThread.Enqueue(() => OnSpawnDice?.Invoke(role, diceCount));
         });
 
         connection.Closed += error =>

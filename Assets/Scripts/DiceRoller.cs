@@ -32,40 +32,57 @@ public class DiceRoller : MonoBehaviour
     public Material defenderMaterial;
 
     List<GameObject> activeDice = new();
+    int attackerDiceCount;
 
     /// <summary>
     /// Roll dice using real physics and read the result. No face correction.
     /// Returns the naturally-landed face values for attacker and defender dice.
+    /// Used by legacy CombatRollRequest flow (both sets at once).
     /// </summary>
     public async Awaitable<(int[] attackerValues, int[] defenderValues)> RollAndRead(int attackerCount, int defenderCount)
     {
-        Debug.Log($"[DiceRoller] Rolling {attackerCount} attacker + {defenderCount} defender dice (physics-driven)");
         ClearDice();
-
-        // Spawn attacker dice on the left side of the arena
-        for (int i = 0; i < attackerCount; i++)
-            activeDice.Add(SpawnDie(new Vector3(-1f + i * 0.8f, 3f, 0), attackerMaterial));
-
-        // Spawn defender dice on the right side
-        for (int i = 0; i < defenderCount; i++)
-            activeDice.Add(SpawnDie(new Vector3(1.5f + i * 0.8f, 3f, 0), defenderMaterial));
-
-        Debug.Log($"[DiceRoller] Spawned {activeDice.Count} dice, waiting to settle");
-
+        attackerDiceCount = attackerCount;
+        SpawnSet("attacker", attackerCount);
+        SpawnSet("defender", defenderCount);
         await WaitForSettle();
+        return ReadAll();
+    }
 
-        // Read the naturally-landed faces
-        var attackerValues = new int[attackerCount];
+    /// <summary>Spawn one player's dice into the arena. First call clears previous dice.</summary>
+    public void SpawnSet(string role, int count)
+    {
+        bool isAttacker = role == "attacker";
+        Material mat = isAttacker ? attackerMaterial : defenderMaterial;
+        float xBase = isAttacker ? -1f : 1.5f;
+
+        if (isAttacker) attackerDiceCount = count;
+
+        for (int i = 0; i < count; i++)
+            activeDice.Add(SpawnDie(new Vector3(xBase + i * 0.8f, 3f, 0), mat));
+
+        Debug.Log($"[DiceRoller] Spawned {count} {role} dice");
+    }
+
+    /// <summary>Wait for all dice to settle then read faces.</summary>
+    public async Awaitable<(int[] attackerValues, int[] defenderValues)> WaitAndReadAll()
+    {
+        await WaitForSettle();
+        return ReadAll();
+    }
+
+    (int[] attackerValues, int[] defenderValues) ReadAll()
+    {
+        int defenderCount = activeDice.Count - attackerDiceCount;
+        var attackerValues = new int[attackerDiceCount];
         var defenderValues = new int[defenderCount];
         int idx = 0;
-        for (int i = 0; i < attackerCount; i++)
+        for (int i = 0; i < attackerDiceCount; i++)
             attackerValues[i] = activeDice[idx++].GetComponent<DiceFaceReader>().ReadTopFace();
         for (int i = 0; i < defenderCount; i++)
             defenderValues[i] = activeDice[idx++].GetComponent<DiceFaceReader>().ReadTopFace();
 
         Debug.Log($"[DiceRoller] Read faces — attacker: [{string.Join(",", attackerValues)}], defender: [{string.Join(",", defenderValues)}]");
-        Debug.Log("[DiceRoller] Roll complete");
-
         return (attackerValues, defenderValues);
     }
 
