@@ -205,4 +205,20 @@ public class BoardRenderer : MonoBehaviour
             }
         }
     }
+
+    // --- Public Static Helpers ---
+
+    /// <summary>Returns the X coordinate (0–100 percentage) for a territory.</summary>
+    public static float GetTerritoryX(int id)
+    {
+        if (id < 0 || id >= 42) return 50f;
+        return COORDS[id].x;
+    }
+
+    /// <summary>Returns the world position of a territory token.</summary>
+    public Vector3 GetTerritoryWorldPosition(int id)
+    {
+        if (id < 0 || id >= 42 || tokens[id] == null) return Vector3.zero;
+        return tokens[id].transform.position;
+    }
 }
