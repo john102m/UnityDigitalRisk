@@ -58,6 +58,8 @@ public class DiceRoller : MonoBehaviour
 
         if (isAttacker) attackerDiceCount = count;
 
+        DiceSound.Arm();
+
         for (int i = 0; i < count; i++)
             activeDice.Add(SpawnDie(new Vector3(xBase + i * 0.8f, 3f, 0), mat));
 
@@ -103,7 +105,7 @@ public class DiceRoller : MonoBehaviour
 
         var rb = die.GetComponent<Rigidbody>();
         Vector3 throwDir = new Vector3(
-            Random.Range(-0.5f, 0.5f),
+            Random.Range(-0.3f, 0.3f),
             Random.Range(-0.5f, 0.2f),
             Random.Range(0.8f, 1.5f)
         ).normalized;
@@ -128,7 +130,7 @@ public class DiceRoller : MonoBehaviour
             foreach (var die in activeDice)
             {
                 var rb = die.GetComponent<Rigidbody>();
-                if (rb.linearVelocity.magnitude > settleThreshold)
+                if (!IsSettled(rb))
                 {
                     allSettled = false;
                     break;
@@ -138,6 +140,12 @@ public class DiceRoller : MonoBehaviour
             elapsed += Time.deltaTime;
             await Awaitable.NextFrameAsync();
         }
+    }
+
+    bool IsSettled(Rigidbody rb)
+    {
+        return rb.linearVelocity.magnitude < settleThreshold
+            && rb.angularVelocity.magnitude < settleThreshold;
     }
 
     /// <summary>Destroy all spawned dice (called after sequence completes).</summary>
